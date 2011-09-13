@@ -1,117 +1,82 @@
-require 'capybara/rack_test/driver'
+require 'capybara'
 require 'mechanize'
+require 'uri'
+require 'nokogiri'
 
-class Capybara::Mechanize::Browser < Capybara::RackTest::Browser
+class Capybara::Mechanize::Browser
   extend Forwardable
 
   def_delegator :agent, :scheme_handlers
   def_delegator :agent, :scheme_handlers=
 
+  attr_reader :agent
+
   def initialize(driver)
     @agent = ::Mechanize.new
-    @agent.redirect_ok = false
+    @agent.redirect_ok = true
+    @agent.follow_meta_refresh = true
     @agent.user_agent = default_user_agent
-    super
   end
 
-  def reset_host!
-    @last_remote_host = nil
-    @last_request_remote = nil
-    super
+  def visit(path, attributes = {})
+    request(:get, path, attributes)
   end
 
-  def current_url
-    last_request_remote? ? remote_response.current_url : super
+  def submit(method, path, attributes = {})
+    path = response.url if path.nil? or path.empty?
+    request(method, path, attributes)
   end
 
-  def last_response
-    last_request_remote? ? remote_response : super
+  def follow(method, path, attributes = {})
+    request(method, path, attributes)
   end
 
-  def follow_redirects!
-    5.times do
-      follow_redirect! if last_response.redirect?
+  def body
+    dom.to_xml
+  end
+
+  def source
+    response.body
+  end
+
+  def reset_dom!
+    @dom = nil
+  end
+
+  def dom
+    @dom ||= Nokogiri::HTML(source)
+  end
+
+  def find(selector)
+    dom.xpath(selector).map { |node|
+      Capybara::RackTest::Node.new(self, node) }
+  end
+
+  protected
+
+  attr_reader :response
+
+  def prepare_url(path)
+    base = response ? response.url.to_s : ""
+    URI.join(base, path.to_s).to_s
+  end
+
+  def request(method, url, attributes = {}, headers = {})
+    url = prepare_url(url)
+    attributes = prepare_arguments(attributes)
+    begin
+      args = []
+      args << attributes unless attributes.empty?
+      args << headers unless headers.empty?
+      @agent.send(method, url, *args)
+      @response = ResponseProxy.new(@agent.current_page)
+    rescue
+      raise "Error while #{method.to_s.upcase}ing #{url}: #{$!}"
     end
-    raise Capybara::InfiniteRedirectError, "redirected more than 5 times, check for infinite redirects." if last_response.redirect?
+    reset_dom!
   end
 
-  def follow_redirect!
-    unless last_response.redirect?
-      raise "Last response was not a redirect. Cannot follow_redirect!"
-    end
-
-    get(last_location_header)
-  end
-
-  def process(method, path, *options)
-    reset_cache!
-    send(method, path, *options)
-    follow_redirects!
-  end
-
-  def process_without_redirect(method, path, attributes, headers)
-    path = @last_path if path.nil? || path.empty?
-
-    if remote?(path)
-      process_remote_request(method, path, attributes, headers)
-    else
-      register_local_request
-
-      path = determine_path(path)
-
-      reset_cache!
-      send("racktest_#{method}", path, attributes, env.merge(headers))
-    end
-
-    @last_path = path
-  end
-
-  # TODO path Capybara to move this into its own method
-  def determine_path(path)
-    new_uri = URI.parse(path)
-    current_uri = URI.parse(current_url)
-
-    if new_uri.host
-      @current_host = new_uri.scheme + '://' + new_uri.host
-    end
-
-    if new_uri.relative?
-      path = request_path + path if path.start_with?('?')
-
-      unless path.start_with?('/')
-        folders = request_path.split('/')
-        if folders.empty?
-          path = '/' + path
-        else
-          path = (folders[0, folders.size - 1] << path).join('/')
-        end
-      end
-      path = current_host + path
-    end
-    path
-  end
-
-  alias :racktest_get :get
-  def get(path, attributes = {}, headers = {})
-    process_without_redirect(:get, path, attributes, headers)
-  end
-
-  alias :racktest_post :post
-  def post(path, attributes = {}, headers = {})
-    process_without_redirect(:post, path, post_data(attributes), headers)
-  end
-
-  alias :racktest_put :put
-  def put(path, attributes = {}, headers = {})
-    process_without_redirect(:put, path, attributes, headers)
-  end
-
-  alias :racktest_delete :delete
-  def delete(path, attributes = {}, headers = {})
-    process_without_redirect(:delete, path, attributes, headers)
-  end
-
-  def post_data(params)
+  def prepare_arguments(params)
     params.inject({}) do |memo, param|
       case param
       when Hash
@@ -129,90 +94,28 @@ class Capybara::Mechanize::Browser < Capybara::RackTest::Browser
     end
   end
 
-  def remote?(url)
-    if Capybara.app_host
-      true
-    else
-      host = URI.parse(url).host
-
-      if host.nil?
-        last_request_remote?
-      else
-        !Capybara::Mechanize.local_hosts.include?(host)
-      end
-    end
-  end
-
-  attr_reader :agent
-
-  private
-
-  def last_location_header
-    last_request_remote? ? remote_response.page.response['Location'] : last_response['Location']
-  end
-
-  def last_request_remote?
-    !!@last_request_remote
-  end
-
-  def register_local_request
-    @last_remote_host = nil
-    @last_request_remote = false
-  end
-
-  def process_remote_request(method, url, attributes, headers)
-    if remote?(url)
-      remote_uri = URI.parse(url)
-
-      if remote_uri.host.nil?
-        remote_host = @last_remote_host || Capybara.app_host || Capybara.default_host
-        url = File.join(remote_host, url)
-        url = "http://#{url}" unless url.include?("http")
-      else
-        @last_remote_host = "#{remote_uri.host}:#{remote_uri.port}"
-      end
-
-      reset_cache!
-      begin
-        args = []
-        args << attributes unless attributes.empty?
-        args << headers unless headers.empty?
-        @agent.send(method, url, *args)
-      rescue => e
-        raise "Received the following error for a #{method.to_s.upcase} request to #{url}: '#{e.message}'"
-      end
-      @last_request_remote = true
-    end
-  end
-
-  def remote_response
-    ResponseProxy.new(@agent.current_page) if @agent.current_page
-  end
-
   def default_user_agent
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_0) AppleWebKit/535.2 (KHTML, like Gecko) Chrome/15.0.853.0 Safari/535.2"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_0) "+
+    "AppleWebKit/535.2 (KHTML, like Gecko) "+
+    "Chrome/15.0.853.0 Safari/535.2"
   end
 
   class ResponseProxy
     extend Forwardable
 
     def_delegator :page, :body
-
     attr_reader :page
 
     def initialize(page)
       @page = page
     end
 
-    def current_url
+    def url
       page.uri.to_s
     end
 
     def headers
-      # Hax the content-type contains utf8, so Capybara specs are failing, need to ask mailinglist
-      headers = page.response
-      headers["content-type"].gsub!(';charset=utf-8', '') if headers["content-type"]
-      headers
+      page.response
     end
 
     def status
@@ -222,8 +125,6 @@ class Capybara::Mechanize::Browser < Capybara::RackTest::Browser
     def redirect?
       [301, 302].include?(status)
     end
-
   end
-
 end
 
