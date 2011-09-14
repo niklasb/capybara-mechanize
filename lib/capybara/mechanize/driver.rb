@@ -1,7 +1,7 @@
 require "capybara"
 require 'capybara/mechanize/browser'
 
-class Capybara::Mechanize::Driver
+class Capybara::Mechanize::Driver < Capybara::Driver::Base
   extend Forwardable
 
   def_delegators :browser, :find,

@@ -10,6 +10,7 @@ class Capybara::Mechanize::Browser
   def_delegator :agent, :scheme_handlers=
 
   attr_reader :agent
+  attr_reader :response
 
   def initialize(driver)
     @agent = ::Mechanize.new
@@ -53,8 +54,6 @@ class Capybara::Mechanize::Browser
   end
 
   protected
-
-  attr_reader :response
 
   def prepare_url(path)
     base = response ? response.url.to_s : ""
