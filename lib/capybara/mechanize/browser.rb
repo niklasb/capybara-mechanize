@@ -37,7 +37,7 @@ class Capybara::Mechanize::Browser
   end
 
   def source
-    response.body
+    response && response.body
   end
 
   def reset_dom!

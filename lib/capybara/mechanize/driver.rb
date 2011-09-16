@@ -21,15 +21,15 @@ class Capybara::Mechanize::Driver < Capybara::Driver::Base
   end
 
   def current_url
-    response.url
+    response && response.url
   end
 
   def status_code
-    response.status
+    response && response.status
   end
 
   def response_headers
-    response.headers
+    response && response.headers
   end
 
   def visit(path)
